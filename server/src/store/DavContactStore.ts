@@ -6,7 +6,7 @@ import { davFetch } from '../dav/auth.js'
 import { assertHrefSameHost } from '../dav/hostAllowlist.js'
 import { isCollectionReadOnly } from '../dav/privileges.js'
 import type { ContactStore, RawCard } from './ContactStore.js'
-import { EtagConflictError, ForbiddenError } from './errors.js'
+import { ContactNotFoundError, EtagConflictError, ForbiddenError } from './errors.js'
 import { decodeId, encodeId } from './idCodec.js'
 
 function withSlash(url: string): string {
@@ -93,9 +93,19 @@ export class DavContactStore implements ContactStore {
     this.checkHref(ctx, addressBookId, href)
     const client = await createClient(ctx, 'carddav')
     const addressBook = await this.book(ctx, addressBookId)
-    const cards = await client.fetchVCards({ addressBook, objectUrls: [href], useMultiGet: false })
+    let cards: Awaited<ReturnType<typeof client.fetchVCards>>
+    try {
+      cards = await client.fetchVCards({ addressBook, objectUrls: [href], useMultiGet: false })
+    } catch (err) {
+      // tsdav reports a missing card as a generic "incomplete response", which
+      // is indistinguishable from a real failure -- confirm it's a 404 before
+      // calling it deleted.
+      const probe = await davFetch(ctx, href, { method: 'HEAD' }).catch(() => null)
+      if (probe?.status === 404) throw new ContactNotFoundError(`Contact not found: ${href}`)
+      throw err
+    }
     const card = cards[0]
-    if (!card || typeof card.data !== 'string') throw new Error(`Contact not found: ${href}`)
+    if (!card || typeof card.data !== 'string') throw new ContactNotFoundError(`Contact not found: ${href}`)
     return { href: String(card.url), etag: String(card.etag ?? ''), vcard: card.data }
   }
 
@@ -133,6 +143,8 @@ export class DavContactStore implements ContactStore {
       headers: { 'If-Match': etag },
     })
     if (response.status === 412) throw new EtagConflictError('Contact changed since it was last read')
+    // Already gone (deleted from another client): the delete's intent is met.
+    if (response.status === 404) return
     if (!response.ok) {
       throw new Error(`Failed to delete contact: ${response.status} ${response.statusText}`)
     }

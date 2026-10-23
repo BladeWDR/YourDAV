@@ -161,11 +161,26 @@ interface CsUserEntry {
   'cs:invite-invalid'?: unknown
   // Per the calendarserver-sharing draft, each cs:user entry carries its
   // own <cs:access><cs:read-write/></cs:access> (or <cs:read/>) block --
-  // NOT independently spike-tested against a live Baikal instance in this
-  // session (no PHP available in this environment, see AGENTS.md "How to
-  // run a local Baikal for testing"); this parses the documented shape and
-  // falls back to 'read' defensively if the expected child isn't found.
+  // Spike-tested against Baikal 0.11.1. The owner is listed too, as a
+  // `cs:user` with an empty `<cs:access/>` (xml-js: `{}`) -- see
+  // parseBaikalInvite().
   'cs:access'?: Record<string, unknown>
+}
+
+/**
+ * Parses a `cs:invite` PROPFIND body into the real recipients. Baikal lists
+ * the calendar's owner as a `cs:user` too (principal href, empty
+ * `<cs:access/>`) once anything is shared; that's not a share, and handing
+ * its token to update/revoke would silently no-op. Entries Baikal couldn't
+ * resolve (`cs:invite-invalid`) are returned as-is: shareCalendar() needs to
+ * see them to report the failure, listings filter them out.
+ */
+export function parseBaikalInvite(xml: string): CsUserEntry[] {
+  const parsed = xml2js(xml, { compact: true, ignoreDeclaration: true }) as Record<string, unknown>
+  const invite = findCsInvite(parsed)
+  if (!invite) return []
+  const users = ([] as CsUserEntry[]).concat((invite as { 'cs:user'?: CsUserEntry | CsUserEntry[] })['cs:user'] ?? [])
+  return users.filter((u) => u['cs:access'] && Object.keys(u['cs:access']).length > 0)
 }
 
 function baikalPermissionFor(entry: CsUserEntry): 'read' | 'readwrite' {
@@ -218,11 +233,7 @@ async function tryBaikalShare(
   if (!verifyRes.ok) {
     throw new ShareFailedError(`Could not verify share: PROPFIND failed with ${verifyRes.status}`)
   }
-  const xml = await verifyRes.text()
-  const parsed = xml2js(xml, { compact: true, ignoreDeclaration: true }) as Record<string, unknown>
-
-  const invite = findCsInvite(parsed)
-  const users: CsUserEntry[] = invite ? ([] as CsUserEntry[]).concat((invite as { 'cs:user'?: CsUserEntry | CsUserEntry[] })['cs:user'] ?? []) : []
+  const users = parseBaikalInvite(await verifyRes.text())
   const entry = users.find((u) => u['d:href']?._text === href)
 
   if (!entry || 'cs:invite-invalid' in entry) {
@@ -400,13 +411,7 @@ export async function listSharesForCalendar(ctx: DavContext, calendarUrl: string
       body: '<?xml version="1.0"?><d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/"><d:prop><cs:invite/></d:prop></d:propfind>',
     })
     if (res.ok) {
-      const xml = await res.text()
-      const parsed = xml2js(xml, { compact: true, ignoreDeclaration: true }) as Record<string, unknown>
-      const invite = findCsInvite(parsed)
-      const users: CsUserEntry[] = invite
-        ? ([] as CsUserEntry[]).concat((invite as { 'cs:user'?: CsUserEntry | CsUserEntry[] })['cs:user'] ?? [])
-        : []
-      baikalShares = users
+      baikalShares = parseBaikalInvite(await res.text())
         .filter((u) => !('cs:invite-invalid' in u) && u['d:href']?._text)
         .map((u) => ({
           recipient: (u['d:href']!._text as string).replace(/^mailto:/, ''),
@@ -455,11 +460,8 @@ export async function updateSharePermission(
   }
 
   // Not a confirmed Radicale share -- treat as a Baikal mailto href and
-  // re-invite with a different access tag. NOT spike-tested against a live
-  // Baikal instance (no PHP available in this environment) -- if
-  // re-inviting an already-accepted recipient doesn't update permission in
-  // place, this will surface as a clear ShareFailedError below rather than
-  // silently no-opping.
+  // re-invite with a different access tag (spike-tested: Baikal 0.11.1
+  // updates the accepted recipient's access in place).
   const accessTag = permission === 'readwrite' ? '<cs:read-write/>' : '<cs:read/>'
   const res = await davFetch(ctx, calendarUrl, {
     method: 'POST',
@@ -500,9 +502,8 @@ export async function revokeShare(ctx: DavContext, calendarUrl: string, token: s
   }
 
   // Not a confirmed Radicale share -- treat as a Baikal mailto href and
-  // send the sharing draft's <cs:remove> block. NOT spike-tested against a
-  // live Baikal instance in this session -- surfaces a clear
-  // ShareFailedError on any non-2xx rather than silently no-opping.
+  // send the sharing draft's <cs:remove> block (spike-tested against Baikal
+  // 0.11.1). Surfaces a ShareFailedError on any non-2xx.
   const res = await davFetch(ctx, calendarUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/xml' },

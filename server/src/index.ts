@@ -7,7 +7,7 @@ import { DavAuthError } from './dav/auth.js'
 import { evictClient } from './dav/client.js'
 import { DisallowedHostError } from './dav/hostAllowlist.js'
 import { originCheck } from './originCheck.js'
-import { ForbiddenError } from './store/errors.js'
+import { ContactNotFoundError, ForbiddenError } from './store/errors.js'
 import { redactLogUrl } from './logRedaction.js'
 import { registerSession } from './session.js'
 import { sessionRoutes } from './routes/session.js'
@@ -58,6 +58,10 @@ async function main(): Promise<void> {
       if (dav) evictClient(dav)
       req.session?.delete()
       reply.code(401).send({ error: 'dav_auth_failed', message: err.message })
+      return
+    }
+    if (err instanceof ContactNotFoundError) {
+      reply.code(404).send({ error: 'not_found', message: 'This contact no longer exists. It may have been deleted elsewhere.' })
       return
     }
     if (err instanceof ForbiddenError) {

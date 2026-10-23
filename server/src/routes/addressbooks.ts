@@ -25,7 +25,7 @@ import {
   vcardToContact,
 } from '../vcard/card.js'
 import type { DavContext } from '../dav/context.js'
-import { EtagConflictError } from '../store/errors.js'
+import { ContactNotFoundError, EtagConflictError } from '../store/errors.js'
 import { encodeId } from '../store/idCodec.js'
 import type { RawCard } from '../store/ContactStore.js'
 import { contactStore } from '../store/contacts.js'
@@ -129,7 +129,11 @@ export async function addressBookRoutes(app: FastifyInstance): Promise<void> {
 
     try {
       // Edit against the server's current copy so unmanaged properties are never lost.
-      const current = await contactStore.getCard(dav, req.params.id, req.body.href)
+      // A card deleted from another client is a conflict too: the client reloads
+      // and tells the user it is gone, rather than showing a bare 404.
+      const current = await contactStore.getCard(dav, req.params.id, req.body.href).catch((e: unknown) => {
+        throw e instanceof ContactNotFoundError ? new EtagConflictError('Contact deleted') : e
+      })
       if (current.etag && current.etag !== req.body.etag) throw new EtagConflictError('Contact changed')
       const updated = await contactStore.updateCard(
         dav,

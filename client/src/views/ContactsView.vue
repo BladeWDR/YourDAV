@@ -4,6 +4,7 @@ import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { api, ApiRequestError } from '../api.js'
 import AppNavSwitcher from '../components/AppNavSwitcher.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import ConflictDialog from '../components/ConflictDialog.vue'
 import BookMenu from '../components/BookMenu.vue'
 import ContactAvatar from '../components/ContactAvatar.vue'
 import GroupMenu from '../components/GroupMenu.vue'
@@ -435,6 +436,31 @@ function buildInput(): ContactInput {
   })
 }
 
+// A save or delete that loses the etag race (412) reloads the book and asks
+// whether to discard or reapply against the fresh etag -- last-write-wins, the
+// same as the calendar side, rather than leaving a stale etag in the cache that
+// would make every retry fail.
+type PendingConflict =
+  | { kind: 'update'; contact: Contact; input: ContactInput }
+  | { kind: 'delete'; contact: Contact }
+const pendingConflict = ref<PendingConflict | null>(null)
+const conflictServerContact = ref<Contact | null>(null)
+const conflictServerVersion = computed(() => {
+  const c = conflictServerContact.value
+  if (!c) return null
+  return { title: c.fullName || '(No name)', detail: c.org || c.emails[0]?.value || c.phones[0]?.value || '' }
+})
+
+function attemptedName(input: ContactInput): string {
+  return input.fullName || [input.name.given, input.name.family].filter(Boolean).join(' ') || '(No name)'
+}
+
+async function openConflict(conflict: PendingConflict): Promise<void> {
+  await contactsStore.loadContacts(conflict.contact.addressBookId, true)
+  conflictServerContact.value = contactsStore.contacts.find((c) => c.id === conflict.contact.id) ?? null
+  pendingConflict.value = conflict
+}
+
 async function saveContact(): Promise<void> {
   const bookId = isCreating.value ? createBookId.value : (contactsStore.selectedContact?.addressBookId ?? '')
   if (!bookId || saving.value || nameMissing.value || dateError.value) return
@@ -446,7 +472,16 @@ async function saveContact(): Promise<void> {
     if (isCreating.value) {
       await contactsStore.createContact(bookId, input)
     } else if (isEditing.value && contactsStore.selectedContact) {
-      await contactsStore.updateContact(contactsStore.selectedContact, input)
+      const contact = contactsStore.selectedContact
+      try {
+        await contactsStore.updateContact(contact, input)
+      } catch (err) {
+        if (err instanceof ApiRequestError && err.status === 412) {
+          await openConflict({ kind: 'update', contact, input })
+          return
+        }
+        throw err
+      }
     }
     closeEditor()
   } catch (err) {
@@ -463,6 +498,58 @@ async function onDeleteContact(): Promise<void> {
   try {
     await contactsStore.deleteContact(contact)
   } catch (err) {
+    if (err instanceof ApiRequestError && err.status === 412) {
+      await openConflict({ kind: 'delete', contact })
+      return
+    }
+    contactsStore.error = err instanceof ApiRequestError ? err.message : 'Could not delete this contact'
+  }
+}
+
+function onConflictDiscard(): void {
+  const conflict = pendingConflict.value
+  pendingConflict.value = null
+  conflictServerContact.value = null
+  // Edits are dropped: the form would otherwise keep showing a version that no
+  // longer exists (or, if it was deleted elsewhere, has nothing to save onto).
+  if (conflict?.kind === 'update') closeEditor()
+}
+
+async function onConflictReapply(): Promise<void> {
+  const conflict = pendingConflict.value
+  const fresh = conflictServerContact.value
+  pendingConflict.value = null
+  conflictServerContact.value = null
+  if (!conflict || !fresh) return
+
+  if (conflict.kind === 'delete') {
+    await onRetryDelete(fresh)
+    return
+  }
+  saving.value = true
+  saveError.value = null
+  try {
+    await contactsStore.updateContact(fresh, conflict.input)
+    closeEditor()
+  } catch (err) {
+    if (err instanceof ApiRequestError && err.status === 412) {
+      await openConflict({ kind: 'update', contact: fresh, input: conflict.input })
+      return
+    }
+    saveError.value = err instanceof ApiRequestError ? err.message : 'Could not save this contact'
+  } finally {
+    saving.value = false
+  }
+}
+
+async function onRetryDelete(contact: Contact): Promise<void> {
+  try {
+    await contactsStore.deleteContact(contact)
+  } catch (err) {
+    if (err instanceof ApiRequestError && err.status === 412) {
+      await openConflict({ kind: 'delete', contact })
+      return
+    }
     contactsStore.error = err instanceof ApiRequestError ? err.message : 'Could not delete this contact'
   }
 }
@@ -1287,6 +1374,16 @@ const contactCountLabel = computed(() => {
 
     <!-- Dialogs -->
     <SettingsDialog v-if="showSettingsDialog" @close="showSettingsDialog = false" />
+
+    <ConflictDialog
+      v-if="pendingConflict"
+      :kind="pendingConflict.kind"
+      noun="contact"
+      :server-version="conflictServerVersion"
+      :attempted-summary="pendingConflict.kind === 'update' ? attemptedName(pendingConflict.input) : ''"
+      @discard="onConflictDiscard"
+      @reapply="onConflictReapply"
+    />
 
     <ConfirmDialog
       v-if="confirmingDelete"

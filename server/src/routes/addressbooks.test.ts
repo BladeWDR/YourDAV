@@ -18,6 +18,7 @@ const storeMock: Record<string, ReturnType<typeof vi.fn>> = {
 vi.mock('../store/contacts.js', () => ({ contactStore: storeMock }))
 
 const { addressBookRoutes } = await import('./addressbooks.js')
+const { ContactNotFoundError } = await import('../store/errors.js')
 
 const dav: DavContext = { baseUrl: 'https://dav.example.com/dav/', username: 'alice', password: 'secret' }
 
@@ -113,6 +114,47 @@ describe('DELETE /api/addressbooks/:id', () => {
 
 const CARD = (uid: string, ...extra: string[]) =>
   ['BEGIN:VCARD', 'VERSION:3.0', `UID:${uid}`, 'FN:Jane Doe', 'N:Doe;Jane;;;', ...extra, 'END:VCARD', ''].join('\r\n')
+
+describe('PUT /api/addressbooks/:id/contacts', () => {
+  const href = 'https://dav.example.com/a/jane.vcf'
+  const payload = {
+    href,
+    etag: '"e1"',
+    name: { given: 'Jane', family: 'Doe', prefix: '', additional: '', suffix: '' },
+    nickname: '',
+    org: '',
+    title: '',
+    emails: [],
+    phones: [],
+    urls: [],
+    addresses: [],
+    birthday: '',
+    anniversary: '',
+    notes: '',
+    categories: [],
+  }
+  const put = () => app.inject({ method: 'PUT', url: '/api/addressbooks/a/contacts', payload })
+
+  beforeEach(() => {
+    storeMock.discoverAddressBooks.mockResolvedValue([book('a')])
+  })
+
+  it('412s when the card changed since the client read it', async () => {
+    storeMock.getCard.mockResolvedValue({ href, etag: '"changed"', vcard: CARD('uid-1') })
+    app = await buildApp()
+    expect((await put()).statusCode).toBe(412)
+    expect(storeMock.updateCard).not.toHaveBeenCalled()
+  })
+
+  it('412s, not 404/500, when the card was deleted elsewhere, so the client can say so', async () => {
+    storeMock.getCard.mockRejectedValue(new ContactNotFoundError('gone'))
+    app = await buildApp()
+    const res = await put()
+    expect(res.statusCode).toBe(412)
+    expect(res.json().error).toBe('conflict')
+    expect(storeMock.updateCard).not.toHaveBeenCalled()
+  })
+})
 
 describe('POST /api/addressbooks/:id/contacts/transfer', () => {
   const body = { href: 'https://dav.example.com/a/jane.vcf', etag: '"e1"', targetBookId: 'b', mode: 'move' }
