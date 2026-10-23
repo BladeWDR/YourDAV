@@ -514,6 +514,18 @@ type PendingConflict =
   | { kind: 'delete'; event: CalendarObject; scope: EditScope }
 const pendingConflict = ref<PendingConflict | null>(null)
 const conflictServerEvent = ref<CalendarObject | null>(null)
+const conflictServerVersion = computed(() => {
+  const e = conflictServerEvent.value
+  if (!e) return null
+  // An all-day instant is a UTC-midnight-anchored calendar date, not a real
+  // timezone-bearing instant -- read in the browser's local zone it can land
+  // on the previous day in any negative-offset zone (see EventDetailPopover).
+  const start = DateTime.fromISO(e.start, { zone: e.allDay ? 'utc' : undefined })
+  return {
+    title: e.summary || '(No title)',
+    detail: e.allDay ? start.toFormat('LLL d, yyyy') : start.toFormat('LLL d, h:mm a'),
+  }
+})
 
 async function doUpdate(
   event: CalendarObject,
@@ -1100,7 +1112,8 @@ watch(enabledSubscriptionIds, (ids, oldIds) => {
     <ConflictDialog
       v-if="pendingConflict"
       :kind="pendingConflict.kind"
-      :server-event="conflictServerEvent"
+      noun="event"
+      :server-version="conflictServerVersion"
       :attempted-summary="pendingConflict.kind === 'update' ? pendingConflict.fields.summary : ''"
       @discard="onConflictDiscard"
       @reapply="onConflictReapply"

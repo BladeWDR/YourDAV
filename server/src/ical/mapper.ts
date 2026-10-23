@@ -190,7 +190,16 @@ export function buildVeventComponent(uid: string, fields: EventFields): ICAL.Com
         if (zone) rdateTime = rdateTime.convertToZone(zone)
       }
     }
-    vevent.addPropertyWithValue('rdate', rdateTime)
+    // addPropertyWithValue doesn't derive TZID from the value's zone (only
+    // the event.startDate/endDate setters do), so without this a zoned RDATE
+    // is written as a floating local time -- other clients then place it in
+    // their own zone, and it reads back here as `floating`.
+    const rdate = new ICAL.Property('rdate')
+    rdate.setValue(rdateTime)
+    if (!rdateTime.isDate && rdateTime.zone && rdateTime.zone.tzid !== 'UTC' && rdateTime.zone.tzid !== 'floating') {
+      rdate.setParameter('tzid', rdateTime.zone.tzid)
+    }
+    vevent.addProperty(rdate)
   }
 
   for (const alarm of fields.alarms) {

@@ -1,56 +1,42 @@
 <script setup lang="ts">
-import type { CalendarObject } from '@yourdav/shared'
-import { DateTime } from 'luxon'
-
-const props = defineProps<{
+defineProps<{
   kind: 'update' | 'delete'
+  noun: 'event' | 'contact'
   // The server's current version, if it could still be found after the
-  // reload triggered by the 412 (null if the event was deleted elsewhere).
-  serverEvent: CalendarObject | null
+  // reload triggered by the 412 (null if it was deleted elsewhere).
+  serverVersion: { title: string; detail: string } | null
   attemptedSummary: string
 }>()
 const emit = defineEmits<{ discard: []; reapply: [] }>()
-
-function whenText(event: CalendarObject): string {
-  // See EventDetailPopover's timeRangeText: an all-day instant is a
-  // UTC-midnight-anchored calendar date, not a real timezone-bearing
-  // instant -- read in the browser's local zone (Luxon's default), it can
-  // land on the previous day in any negative-offset zone.
-  const start = DateTime.fromISO(event.start, { zone: event.allDay ? 'utc' : undefined })
-  return event.allDay ? start.toFormat('LLL d, yyyy') : start.toFormat('LLL d, h:mm a')
-}
 </script>
 
 <template>
   <div class="overlay" @click.self="emit('discard')">
     <div class="dialog">
-      <h2>This event changed elsewhere</h2>
+      <h2>This {{ noun }} changed elsewhere</h2>
       <p class="dialog__hint">
-        Someone (maybe you, in another tab) changed this event before your
-        {{ props.kind === 'delete' ? 'delete' : 'save' }} went through.
+        Someone (maybe you, in another tab) changed this {{ noun }} before your
+        {{ kind === 'delete' ? 'delete' : 'save' }} went through.
       </p>
 
-      <div v-if="serverEvent" class="dialog__version">
+      <div v-if="serverVersion" class="dialog__version">
         <span class="dialog__version-label">Current version on the server</span>
-        <p class="dialog__version-title">{{ serverEvent.summary || '(No title)' }}</p>
-        <p class="dialog__version-when">{{ whenText(serverEvent) }}</p>
+        <p class="dialog__version-title">{{ serverVersion.title }}</p>
+        <p v-if="serverVersion.detail" class="dialog__version-when">{{ serverVersion.detail }}</p>
       </div>
-      <p v-else class="dialog__hint">It looks like this event was deleted elsewhere.</p>
+      <p v-else class="dialog__hint">It looks like this {{ noun }} was deleted elsewhere.</p>
 
-      <div class="dialog__version" v-if="props.kind === 'update'">
+      <div class="dialog__version" v-if="kind === 'update'">
         <span class="dialog__version-label">Your attempted change</span>
         <p class="dialog__version-title">{{ attemptedSummary }}</p>
       </div>
 
       <div class="dialog__actions">
-        <button type="button" class="btn btn-ghost" @click="emit('discard')">Discard my changes</button>
-        <button
-          v-if="serverEvent"
-          type="button"
-          class="btn btn-primary"
-          @click="emit('reapply')"
-        >
-          {{ props.kind === 'delete' ? 'Delete anyway' : 'Reapply my changes' }}
+        <button type="button" class="btn btn-ghost" @click="emit('discard')">
+          {{ serverVersion ? 'Discard my changes' : 'OK' }}
+        </button>
+        <button v-if="serverVersion" type="button" class="btn btn-primary" @click="emit('reapply')">
+          {{ kind === 'delete' ? 'Delete anyway' : 'Reapply my changes' }}
         </button>
       </div>
     </div>

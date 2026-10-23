@@ -79,6 +79,20 @@ describe('mapper round-trip', () => {
     expect(new Date(obj.rdate[0]).toISOString()).toBe('2026-04-01T15:00:00.000Z')
   })
 
+  it('writes a zoned RDATE with a TZID instead of a floating time', () => {
+    const fields = baseFields({
+      timezone: 'America/New_York',
+      start: '2026-03-10T13:00:00.000Z',
+      end: '2026-03-10T14:00:00.000Z',
+      rrule: 'FREQ=MONTHLY;COUNT=3',
+      rdate: ['2026-03-20T13:00:00.000Z'],
+    })
+    const ics = calendarObjectToIcs('test-uid', fields)
+    expect(ics).toMatch(/^RDATE;TZID=America\/New_York:20260320T090000$/m)
+    const obj = roundTrip(fields)
+    expect(new Date(obj.rdate[0]).toISOString()).toBe('2026-03-20T13:00:00.000Z')
+  })
+
   it('preserves RDATEs for an all-day event', () => {
     const fields = baseFields({
       allDay: true,
