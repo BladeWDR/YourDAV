@@ -1025,7 +1025,6 @@ const contactCountLabel = computed(() => {
             </div>
 
             <form class="edit-form" @submit.prevent="saveContact">
-
               <div v-if="isCreating && contactsStore.writableBooks.length > 1" class="form-group">
                 <label for="new-contact-book">Address book</label>
                 <select id="new-contact-book" v-model="createBookId" class="select">
